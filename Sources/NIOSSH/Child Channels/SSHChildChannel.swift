@@ -649,8 +649,14 @@ private extension SSHChildChannel {
     private func deliverSingleRead(_ data: PendingContent) {
         switch data {
         case .data(let data):
-            // We only futz with the window manager if the channel is not already closed.
-            if !self.didClose, let increment = self.windowManager.unbufferBytes(data.data.readableBytes) {
+            // We only futz with the window manager if the channel can still accept
+            // a window adjust (open-ish state). This backports upstream #95/#143:
+            // skip the adjust when the channel is requesting/closing/closed so we
+            // never hit the fatal "window adjust on channel in invalid state" during
+            // teardown (e.g. SSH direct-tcpip tunnels). `canSendWindowAdjust` covers
+            // all invalid states, including `.closedRemotely`.
+            if !self.didClose, self.state.canSendWindowAdjust,
+                let increment = self.windowManager.unbufferBytes(data.data.readableBytes) {
                 let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
                 self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
             }

@@ -429,7 +429,13 @@ extension ChildChannelStateMachine {
             preconditionFailure("Somehow received channel EOF for idle channel")
 
         case .requestedLocally, .requestedRemotely, .closedLocally, .closedRemotely, .closed:
-            preconditionFailure("Sent channel window adjust on channel in invalid state")
+            // The channel is requesting, closing, or closed. A window adjust here
+            // is pointless (the peer is tearing the channel down or has already),
+            // and crashing the whole process over a benign teardown race is wrong.
+            // Backport of upstream PRs #95/#143, made tolerant so no call path
+            // (notably SSH direct-tcpip tunnel teardown) can trip the fatal error.
+            // Dropping the adjust is harmless: the peer won't act on it either.
+            return
         }
     }
 
@@ -605,6 +611,22 @@ extension ChildChannelStateMachine {
         case .closedLocally, .closed:
             return true
         case .idle, .requestedLocally, .requestedRemotely, .active, .halfClosedLocal, .halfClosedRemote, .quiescent, .closedRemotely:
+            return false
+        }
+    }
+
+    /// Whether the channel is in a state where sending a window adjust is valid
+    /// (mirrors the valid cases of `sendChannelWindowAdjust`). Used to gate
+    /// `SSHChildChannel.deliverSingleRead` so we never ask for a window adjust
+    /// on a channel that is requesting or closing/closed. Backport of upstream
+    /// #95/#143, but covers ALL invalid states — upstream's `sentClose` alone is
+    /// false for `.closedRemotely`, which is exactly the remote-close teardown
+    /// race that crashed gumpbox tunnels.
+    var canSendWindowAdjust: Bool {
+        switch self.state {
+        case .active, .halfClosedLocal, .halfClosedRemote, .quiescent:
+            return true
+        case .idle, .requestedLocally, .requestedRemotely, .closedLocally, .closedRemotely, .closed:
             return false
         }
     }
